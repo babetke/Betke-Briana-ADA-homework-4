@@ -1,0 +1,445 @@
+---
+title: "Betke-Briana-ADA-homework-4"
+author: "Briana Betke"
+date: "5/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Homework 4
+Starting with reading in the packages needed for the assignment:
+```{r message=FALSE}
+library(tidyverse)
+library(patchwork) # for plotting
+library(scales) # for log y axis scale
+library(collapse) # for `fmode()` to find mode
+library(BBmisc) # for %nin%
+library(devtools)
+library(tidycovid19)
+```
+
+run the function provided:
+```{r message=FALSE}
+merged <- download_merged_data(cached = TRUE)
+merged <- merged %>%
+  group_by(country, iso3c) %>%
+  arrange(country, iso3c, date) %>%
+  mutate(
+    daily_confirmed = confirmed - lag(confirmed, n = 1),
+    daily_deaths = deaths - lag(deaths, n = 1),
+    daily_recovered = recovered - lag(recovered, n = 1)
+  ) %>%
+  mutate(
+    daily_confirmed = replace_na(daily_confirmed, 0),
+    daily_deaths = replace_na(daily_deaths, 0),
+    daily_recovered = replace_na(daily_recovered, 0)
+  ) %>%
+  ungroup() %>%
+  arrange(country, iso3c, date)
+
+add_world1 <- merged %>%
+  group_by(date) %>%
+  arrange(date) %>%
+  summarize(
+    country = "World", iso3c = NA, confirmed = sum(confirmed, na.rm = TRUE),
+    deaths = sum(deaths, na.rm = TRUE), recovered = sum(recovered, na.rm = TRUE),
+    timestamp = fmode(timestamp)
+  ) %>%
+  mutate(
+    daily_confirmed = confirmed - lag(confirmed, n = 1),
+    daily_deaths = deaths - lag(deaths, n = 1),
+    daily_recovered = recovered - lag(recovered, n = 1)
+  ) %>%
+  mutate(
+    daily_confirmed = replace_na(daily_confirmed, 0),
+    daily_deaths = replace_na(daily_deaths, 0),
+    daily_recovered = replace_na(daily_recovered, 0)
+  ) %>%
+  ungroup() %>%
+  arrange(country, iso3c, date)
+
+add_world2 <- merged %>%
+  group_by(country, iso3c) %>%
+  summarize(
+    population = fmode(population),
+    land_area_skm = fmode(land_area_skm),
+    timestamp = fmode(timestamp)
+  ) %>%
+  ungroup() %>%
+  summarize(
+    country = "World", iso3c = NA,
+    population = sum(population, na.rm = TRUE),
+    land_area_skm = sum(land_area_skm, na.rm = TRUE)
+  ) %>%
+  mutate(pop_density = population / land_area_skm)
+
+add_world <- left_join(add_world1, add_world2, by = c("country", "iso3c"))
+merged <- bind_rows(merged, add_world)
+
+cv_data <- pivot_longer(merged,
+  cols = c(
+    "confirmed", "deaths", "recovered",
+    "daily_confirmed", "daily_deaths", "daily_recovered"
+  ),
+  names_to = "variable", values_to = "cases"
+) %>%
+  arrange(country, variable, date) %>%
+  rename(area = land_area_skm, density = pop_density) %>%
+  mutate(rate = cases / population * 10^6) %>%
+  ## new code to omit data before 2020-05-11
+  filter(date < "2020-05-11")
+## end of new code
+```
+
+Now the function:
+```{r}
+cv_summary <- function(d, country_list = "World",
+                       plot = TRUE, facet = "country",
+                       status = c("confirmed", "deaths", "recovered")) {
+
+  # based on `wes_palettes()` color schemes GrandBudapest1, IsleofDogs1,
+  # IsleofDogs2 from the {wesanderson} package
+  my_palette <- c(
+    "#5B1A18", "#FD6467", "#F1BB7B", "#D67236",
+    "#0F0D0E", "#9986A5", "#79402E", "#CCBA72", "#D9D0D3", "#8D8680",
+    "#EAD3BF", "#AA9486", "#B6854D", "#39312F", "#1C1718"
+  )
+
+  if (facet == "country") {
+    fill <- "variable"
+    n <- length(unique(d$variable)) / 2
+    # need only half of unique # of variable (3)
+  }
+
+  if (facet == "variable") {
+    fill <- "country"
+    n <- length(country_list)
+    # need number of countries
+  }
+
+  if ("All" %in% country_list) {
+    country_list <- unique(d$country)
+    country_list <- setdiff(country_list, "World")
+  }
+
+  if ("World" %in% country_list) {
+    d <- d %>% filter(country %in% country_list)
+
+    totals <- d %>%
+      group_by(variable) %>%
+      summarize(
+        country = "World",
+        cases = max(cases),
+        population = max(population),
+        area = max(area),
+        density = max(density),
+        rate = max(rate, na.rm = TRUE),
+        on = max(date)
+      ) %>%
+      select(country, variable, cases, population, area, density, rate, on) %>%
+      arrange(variable) %>%
+      ungroup()
+  }
+
+  if ("World" %nin% country_list) {
+    d <- d %>% filter(country %in% country_list)
+    totals <- d %>%
+      group_by(country, variable) %>%
+      summarize(
+        cases = max(cases),
+        population = max(population),
+        area = max(area),
+        density = max(density),
+        rate = max(rate, na.rm = TRUE),
+        on = max(date),
+        gdp_capita = fmode(gdp_capita),
+        income = fmode(income),
+        life_expectancy = fmode(life_expectancy),
+        max_sd = max(soc_dist),
+        max_mr = max(mov_rest)
+      ) %>%
+      select(
+        country, variable, cases, population, area, density, rate,
+        gdp_capita, income, life_expectancy, max_sd, max_mr, on
+      ) %>%
+      arrange(country, variable) %>%
+      ungroup()
+  }
+
+  if (plot == TRUE) {
+    cc <- filter(d, variable %in% status)
+    cum_cases_plot <- ggplot(
+      data = cc,
+      # use the tidy evaluation pronoun .data to slice the chosen fill
+      # variable from the data frame
+      aes(
+        x = date, y = cases + 1, color = .data[[fill]],
+        fill = .data[[fill]]
+      )
+    ) +
+      geom_point(size = 0.5) +
+      geom_line() +
+      # use the tidy evaluation pronoun .data to slice the chosen facet_wrap
+      # variable from the data frame
+      facet_wrap(~ .data[[facet]], ncol = 5) +
+      xlab("Date") +
+      ylab("Log Cumulative Cases") +
+      scale_y_log10(
+        breaks = trans_breaks("log10", function(x) 10^x),
+        labels = trans_format("log10", math_format(10^.x))
+      ) +
+      scale_color_manual(
+        aesthetics = c("color", "fill"),
+        name = NULL, values = my_palette
+      )
+
+    dc <- filter(d, variable %in% paste0("daily_", status))
+    daily_cases_plot <- ggplot(
+      data = dc,
+      aes(
+        x = date, y = cases, color = .data[[fill]],
+        fill = .data[[fill]]
+      )
+    ) +
+      geom_point(size = 0.5) +
+      geom_line() +
+      facet_wrap(~ .data[[facet]], ncol = 5) +
+      xlab("Date") +
+      ylab("Daily Cases") +
+      scale_color_manual(
+        aesthetics = c("color", "fill"),
+        name = NULL, values = my_palette
+      )
+  }
+
+  if (plot == TRUE) {
+    return(list(
+      totals = totals,
+      cum_cases_plot = cum_cases_plot,
+      daily_cases_plot = daily_cases_plot
+    ))
+  } else {
+    return(list(totals = totals))
+  }
+}
+```
+
+### Challenge 1 
+Plot global data on confirmed coronavirus infections, deaths, and recoveries with the function. 
+```{r}
+results <- cv_summary(cv_data, country_list = "World")
+results
+```
+
+### Challenge 2
+Plot data on confirmed coronavirus infections, deaths, and recoveries for the G7 countries plus China, Russia, and Iran. Facet by country, then variable.
+```{r}
+# make a list of countries
+countries <- list("United States", "United Kingdom", "Canada", "France", "Germany", "Italy", "Japan", "China", "Russia", "Iran")
+
+# by country
+cv_summary(cv_data, country_list = countries, facet = "country")
+
+# by variable
+cv_summary(cv_data, country_list = countries, facet = "variable")
+```
+
+### Challenge 3
+Get the summary for all countries then filter for countries with a population over 1 million. Get the number of countires. 
+```{r}
+results2 <- cv_summary(cv_data, country_list = "All", plot = FALSE)
+All <- results2$totals
+
+# Tibble called d of countries with a population over 1 million
+d <- filter(All, population > 1000000)
+
+# I used the table function then got the lenght of the table. I know using the unique function in place of the table gives the same number.
+length(table(d$country))
+```
+According to the output, there are 155 countries with populations greater than 1 million in this dataset. 
+
+### Challenge 4
+Create two datasets from d
+```{r}
+# Make the overall tibble
+overall <- filter(d, variable == "confirmed")
+head(overall, 3)
+
+# Make the daily tibble
+daily <- filter(d, variable == "daily_confirmed")
+head(daily, 3)
+```
+
+Which 10 countries have exprienced the highest rate of confirmed cases?
+```{r}
+rate_All <- overall %>% arrange(desc(rate))
+head(rate_All, 10)
+```
+
+Which 10 countries expericence the highest single day rate of confirmed cases?
+```{r}
+rate_Daily <- daily %>% arrange(desc(rate))
+head(rate_Daily, 10)
+```
+
+### Challenge 5 
+Running a linear model with overall rate as the response and density, population, gdp, and income as predictors.  
+
+Visualizing the variables for overall:
+```{r message=FALSE, warning=FALSE}
+# Set up the histograpms with ggplot
+rate_gg <- ggplot(overall, aes(x=rate)) + geom_histogram()
+density_gg <- ggplot(overall, aes(x=density)) + geom_histogram()
+pop_gg <- ggplot(overall, aes(x=population)) + geom_histogram()
+gdp_gg <- ggplot(overall, aes(x=gdp_capita)) + geom_histogram()
+
+# Make multiplot with patcwork since its already read in. 
+(rate_gg | density_gg)/(pop_gg | gdp_gg)
+```
+
+Numeric variables with transformations:
+```{r message=FALSE, warning=FALSE}
+log_rate_gg <- ggplot(overall, aes(x=log(rate))) + geom_histogram()
+log_density_gg <- ggplot(overall, aes(x=log(density))) + geom_histogram()
+log_pop_gg <- ggplot(overall, aes(x=log(population))) + geom_histogram()
+log_gdp_gg <- ggplot(overall, aes(x=log(gdp_capita))) + geom_histogram()
+
+(log_rate_gg | log_density_gg)/(log_pop_gg | log_gdp_gg)
+```
+
+Run the model:
+```{r}
+overall_NA <- overall %>% drop_na()
+# dataset without the value of zero in rate
+overall_NA <- filter(overall_NA, rate > 0)
+overall_NA$income <- as.factor(overall_NA$income)
+
+mod <- lm(log(rate) ~ log(density) + log(population) + log(gdp_capita) + income, data = overall_NA)
+summary(mod)
+```
+There is evidence, according to this model that density and gdp_capita have slopes that are significantly different than 0. 
+
+### Challenge 6 
+Stepwise selection with AIC find which model is preferred and do this also for the daily infection rates. 
+
+```{r message=FALSE}
+# Read in MASS and MuMIn
+library(MASS)
+library(MuMIn)
+
+# running model selection from the model, called mod, defined in challenge 5
+(s <- stepAIC(mod, scope = . ~ ., direction = "both"))
+```
+
+```{r}
+# for the full model
+r.squaredGLMM(mod)
+
+# for the best model
+best <- lm(log(rate) ~ log(density) + log(gdp_capita), data = overall_NA)
+r.squaredGLMM(best)
+```
+Best model has lower R2 value than the full model.  
+
+Now to repeat with daily data:
+```{r}
+# having trouble with running model with transformation
+daily <- filter(daily, rate > 0)
+daily$income <- as.factor(daily$income)
+
+# Run the model
+mod_daily <- lm(log(rate) ~ log(density) + log(population) + log(gdp_capita) + income, data = daily)
+summary(mod_daily)
+```
+
+Variable selection
+```{r}
+(s <- stepAIC(mod_daily, scope = . ~ ., direction = "both"))
+```
+Pseudo r squared
+```{r}
+# for the full model
+r.squaredGLMM(mod_daily)
+
+# for the best model
+best <- lm(log(rate) ~ log(density) + log(gdp_capita), data = daily)
+r.squaredGLMM(best)
+```
+The output for daily appears to be the same as the overall. I am not sure this is correct.
+
+### Challenge 7 
+Add social distancing and movement restriction to the selected model from challenge 6.  
+
+First model with both variables added.
+```{r}
+daily$max_sd_log1 <- log(daily$max_sd + 1)
+daily$max_mr_log1 <- log(daily$max_mr + 1)
+
+best_plus_all <- lm(log(rate) ~ log(density) + log(gdp_capita) + max_sd_log1 + max_mr_log1, data = daily)
+summary(best_plus_all)
+```
+
+Second model without movement restriction:
+```{r}
+best_plus_sd <- lm(log(rate) ~ log(density) + log(gdp_capita) + max_sd_log1, data = daily)
+summary(best_plus_sd)
+```
+
+Third model without social distancing:
+```{r}
+best_plus_mr <- lm(log(rate) ~ log(density) + log(gdp_capita) + max_mr_log1, data = daily)
+summary(best_plus_mr)
+```
+
+Look at AICc table:
+```{r message=FALSE}
+library(AICcmodavg) 
+aic_table <- aictab(list(best_plus_all, best_plus_sd, best_plus_mr),
+  modnames = c("best_plus_all", "best_plus_sd", "best_plus_mr"))
+aic_table
+```
+When looking at AICc, it appears that having one or the other, does improve the model. 
+
+### Challenge 8 
+
+Set up the dataset:
+```{r}
+dat <- cv_data %>% filter(population > 1000000 & rate > 0 & variable == "daily_confirmed")
+```
+
+On to the models!
+```{r message=FALSE}
+library(lme4) # for the lmer function
+# Full model
+m1 <- lmer(data = dat, log(rate) ~ log(density) + log(gdp_capita) + soc_dist + mov_rest + (1|country) + (1|date),   REML = FALSE)
+
+# wihtout mov_rest
+m2 <- lmer(data = dat, log(rate) ~ log(density) + log(gdp_capita) + soc_dist + (1|country) + (1|date),   REML = FALSE)
+
+# without soc_dist
+m3 <- lmer(data = dat, log(rate) ~ log(density) + log(gdp_capita) + (1|country) + (1|date),   REML = FALSE)
+
+# without density
+m4 <- lmer(data = dat, log(rate) ~ log(gdp_capita) + soc_dist + mov_rest + (1|country) + (1|date),   REML = FALSE)
+
+# without gdp
+m5 <- lmer(data = dat, log(rate) ~ log(density) + soc_dist + mov_rest + (1|country) + (1|date),   REML = FALSE)
+
+# Null model with just random effects
+null <- lmer(data = dat, log(rate) ~ (1|country) + (1|date), REML = FALSE)
+```
+
+Create and AIC table of the models. Which one is the best model? What is the pseudo r value of that model?
+```{r message=FALSE}
+(aic_table <- aictab(list(m1, m2, m3, m4, m5, null),
+  modnames = c("m1", "m2", "m3", "m4", "m5", "null")))
+
+r.squaredGLMM(m1)
+```
+According to the table, the full model has the lowest AICc and the highest Akaike weight of 1. 
+
+
+
