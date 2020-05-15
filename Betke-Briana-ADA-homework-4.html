@@ -1005,13 +1005,8 @@ summary(best_plus_mr)</code></pre>
 ## Multiple R-squared:  0.5234, Adjusted R-squared:  0.5135 
 ## F-statistic: 53.08 on 3 and 145 DF,  p-value: &lt; 2.2e-16</code></pre>
 <p>Look at AICc table:</p>
-<pre class="r"><code>library(AICcmodavg) </code></pre>
-<pre><code>## 
-## Attaching package: 'AICcmodavg'</code></pre>
-<pre><code>## The following objects are masked from 'package:MuMIn':
-## 
-##     AICc, DIC, importance</code></pre>
-<pre class="r"><code>aic_table &lt;- aictab(list(best_plus_all, best_plus_sd, best_plus_mr),
+<pre class="r"><code>library(AICcmodavg) 
+aic_table &lt;- aictab(list(best_plus_all, best_plus_sd, best_plus_mr),
   modnames = c(&quot;best_plus_all&quot;, &quot;best_plus_sd&quot;, &quot;best_plus_mr&quot;))
 aic_table</code></pre>
 <pre><code>## 
